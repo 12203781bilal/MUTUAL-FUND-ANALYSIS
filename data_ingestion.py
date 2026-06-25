@@ -20,6 +20,7 @@ def ensure_dirs():
 def load_raw_csvs():
     files = glob.glob(os.path.join(DATA_RAW, "*.csv"))
     dfs = {}
+    diagnostics = {}
     for f in files:
         try:
             df = pd.read_csv(f)
@@ -28,8 +29,29 @@ def load_raw_csvs():
         name = os.path.splitext(os.path.basename(f))[0]
         dfs[name] = df
         logging.info(f"Loaded {f}: shape={df.shape}")
-        print(df.dtypes)
-        print(df.head(3))
+        # Dataset diagnostics
+        diag = {
+            'shape': df.shape,
+            'dtypes': df.dtypes.to_dict(),
+            'head': df.head(3).to_dict(orient='records'),
+            'missing_counts': df.isnull().sum().to_dict(),
+            'duplicated_count': int(df.duplicated().sum())
+        }
+        # nav-specific check
+        nav_col = next((c for c in df.columns if 'nav' in c.lower()), None)
+        if nav_col:
+            nav_series = pd.to_numeric(df[nav_col], errors='coerce')
+            diag['invalid_nav_count'] = int(nav_series.isna().sum() + (nav_series <= 0).sum())
+        diagnostics[name] = diag
+        # Print concise diagnostics
+        print(f"File: {name}")
+        print("  shape:", diag['shape'])
+        print("  dtypes:", diag['dtypes'])
+        print("  head:", diag['head'])
+        print("  missing:", diag['missing_counts'])
+        print("  duplicates:", diag['duplicated_count'])
+        if 'invalid_nav_count' in diag:
+            print("  invalid_nav_count:", diag['invalid_nav_count'])
     return dfs
 
 
@@ -135,6 +157,49 @@ def main():
     processed_paths = save_cleaned(cleaned)
     counts = build_sqlite_and_load(processed_paths)
     logging.info(f"Row counts in SQLite: {counts}")
+
+    # Day 1 validations and short data quality summary
+    reports_dir = 'reports'
+    os.makedirs(reports_dir, exist_ok=True)
+    summary_lines = []
+    summary_lines.append('# Day 1 Data Quality Summary')
+    summary_lines.append('')
+    # Per-file summary
+    summary_lines.append('## Per-file diagnostics')
+    for name, df in raw.items():
+        summary_lines.append(f"### {name}")
+        summary_lines.append(f"- shape: {df.shape}")
+        summary_lines.append(f"- missing counts: {df.isnull().sum().to_dict()}")
+        summary_lines.append(f"- duplicated rows: {int(df.duplicated().sum())}")
+        nav_col = next((c for c in df.columns if 'nav' in c.lower()), None)
+        if nav_col:
+            nav_series = pd.to_numeric(df[nav_col], errors='coerce')
+            invalid_nav = int(nav_series.isna().sum() + (nav_series <= 0).sum())
+            summary_lines.append(f"- invalid_nav_count: {invalid_nav}")
+
+    # AMFI validation if master and nav history exist
+    fm_path = os.path.join(DATA_RAW, '01_fund_master.csv')
+    nav_path = os.path.join(DATA_RAW, '02_nav_history.csv')
+    summary_lines.append('\n## AMFI Code Validation')
+    try:
+        fm = pd.read_csv(fm_path)
+        navh = pd.read_csv(nav_path)
+        master_codes = set(fm['amfi_code'].astype(str))
+        nav_codes = set(navh['amfi_code'].astype(str))
+        missing_in_nav = sorted(master_codes - nav_codes)
+        missing_in_master = sorted(nav_codes - master_codes)
+        summary_lines.append(f"- codes in master: {len(master_codes)}")
+        summary_lines.append(f"- codes in nav_history: {len(nav_codes)}")
+        summary_lines.append(f"- codes in master missing from nav_history: {missing_in_nav}")
+        summary_lines.append(f"- codes in nav_history missing from master: {missing_in_master}")
+    except Exception as e:
+        summary_lines.append(f"AMFI validation skipped: {e}")
+
+    # Write summary file
+    summary_path = os.path.join(reports_dir, 'day1_data_quality.md')
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(summary_lines))
+    logging.info(f"Wrote Day 1 data quality summary to {summary_path}")
 
 
 if __name__ == '__main__':
