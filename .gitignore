@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+bluestock_mf.db
+data/raw/*_raw.json
+data/processed/*.csv
+.vscode/
+env/
